@@ -1,0 +1,473 @@
+use super::*;
+
+grammar;
+
+// ITEM ////////////////////////////////////////////////////////////////////////
+
+pub Item: Item =
+    {
+        <attrs:Attribute*>
+        <vis:Visibility>
+        "struct"
+        <ident:Ident>
+        <generics:Generics>
+        <body:StructBody>
+        => Item {
+            ident: ident,
+            vis: vis,
+            attrs: attrs,
+            generics: generics,
+            body: body,
+        }
+    ,
+        <attrs:Attribute*>
+        <vis:Visibility>
+        "enum"
+        <ident:Ident>
+        <generics:Generics>
+        <body:EnumBody>
+        => Item {
+            ident: ident,
+            vis: vis,
+            attrs: attrs,
+            generics: generics,
+            body: body,
+        }
+    };
+
+StructBody: Body =
+    {
+        StructLikeBody
+        => Body::Struct(Style::Struct, <>)
+    ,
+        <TupleLikeBody> ";"
+        => Body::Struct(Style::Tuple, <>)
+    ,
+        ";"
+        => Body::Struct(Style::Unit, Vec::new())
+    };
+
+EnumBody: Body =
+    "{" <Terminated0<",", Variant>> "}"
+    => Body::Enum(<>);
+
+Variant: Variant =
+    <attrs:Attribute*> <ident:Ident> <body:VariantBody>
+    => Variant {
+        ident: ident,
+        attrs: attrs,
+        style: body.0,
+        fields: body.1,
+    };
+
+VariantBody: (Style, Vec<Field>) =
+    {
+        StructLikeBody
+        => (Style::Struct, <>)
+    ,
+        TupleLikeBody
+        => (Style::Tuple, <>)
+    ,
+        ()
+        => (Style::Unit, Vec::new())
+    };
+
+StructLikeBody: Vec<Field> =
+    "{" <Terminated0<",", StructField>> "}";
+
+TupleLikeBody: Vec<Field> =
+    "(" <Terminated0<",", TupleField>> ")";
+
+StructField: Field =
+    <attrs:Attribute*>
+    <vis:Visibility>
+    <ident:Ident>
+    ":"
+    <ty:Ty>
+    => Field {
+        ident: Some(ident),
+        vis: vis,
+        attrs: attrs,
+        ty: ty,
+    };
+
+TupleField: Field =
+    <attrs:Attribute*>
+    <vis:Visibility>
+    <ty:Ty>
+    => Field {
+        ident: None,
+        vis: vis,
+        attrs: attrs,
+        ty: ty,
+    };
+
+// ATTR ////////////////////////////////////////////////////////////////////////
+
+Attribute: Attribute =
+    {
+        "#" "[" <MetaItem> "]"
+        => Attribute {
+            value: <>,
+            is_sugared_doc: false,
+        }
+    ,
+        r"///[^\n]*"
+        => Attribute {
+            value: MetaItem::NameValue(
+                "doc".into(),
+                <>.into(),
+            ),
+            is_sugared_doc: true,
+        }
+    };
+
+MetaItem: MetaItem =
+    {
+        <Ident> "(" <Separated0<",", MetaItem>> ")"
+        => MetaItem::List(<>)
+    ,
+        <Ident> "=" <Quoted>
+        => MetaItem::NameValue(<>)
+    ,
+        Ident
+        => MetaItem::Word(<>)
+    };
+
+// TODO handle parsing the escape sequences
+Quoted: String =
+    r#""(?:[^"\\]|\\.)*""#
+    => {
+        let s = <>;
+        s[1 .. s.len()-1].to_owned()
+    };
+
+// GENERICS ////////////////////////////////////////////////////////////////////
+
+Generics: Generics =
+    <bracketed:BracketedGenerics>
+    <where_clause:("where" <Terminated1<",", WherePredicate>>)>
+    => Generics {
+        lifetimes: bracketed.0,
+        ty_params: bracketed.1,
+        where_clause: where_clause,
+    };
+
+BracketedGenerics: (Vec<LifetimeDef>, Vec<TyParam>) =
+    {
+        "<" <Separated1<",", LifetimeDef>> "," <Separated1<",", TyParam>> ">"
+    ,
+        "<" <Separated1<",", LifetimeDef>> <Empty<TyParam>> ">"
+    ,
+        "<" <Empty<LifetimeDef>> <Separated1<",", TyParam>> ">"
+    ,
+        "<" <Empty<LifetimeDef>> <Empty<TyParam>> ">"
+    ,
+        Empty<LifetimeDef> Empty<TyParam>
+    };
+
+Lifetime: Lifetime =
+    "'" <Ident>
+    => Lifetime {
+        ident: format!("'{}", <>).into(),
+    };
+
+LifetimeDef: LifetimeDef =
+    <life:Lifetime> <bounds:(":" <Separated1<"+", Lifetime>>)?>
+    => LifetimeDef {
+        lifetime: life,
+        bounds: bounds.unwrap_or_else(Vec::new),
+    };
+
+BoundLifetimes: Vec<LifetimeDef> =
+    "for" "<" <Separated0<",", LifetimeDef>> ">";
+
+TyParam: TyParam =
+    <ident:Ident>
+    <bounds:(":" <Separated1<"+", TyParamBound>>)?>
+    <default:("=" <Ty>)?>
+    => TyParam {
+        ident: ident,
+        bounds: bounds.unwrap_or_else(Vec::new),
+        default: default,
+    };
+
+TyParamBound: TyParamBound =
+    {
+        "?" "Sized"
+        => TyParamBound::MaybeSized
+    ,
+        Lifetime
+        => TyParamBound::Region(<>)
+    ,
+        PolyTraitRef
+        => TyParamBound::Trait(<>)
+    };
+
+WherePredicate: WherePredicate =
+    {
+        <life:Lifetime>
+        ":"
+        <bounds:Separated1<"+", Lifetime>>
+        => WherePredicate::RegionPredicate(WhereRegionPredicate {
+            lifetime: life,
+            bounds: bounds,
+        })
+    ,
+        <bound_lifetimes:BoundLifetimes>
+        <bounded_ty:Ty>
+        ":"
+        <bounds:Separated1<"+", TyParamBound>>
+        => WherePredicate::BoundPredicate(WhereBoundPredicate {
+            bound_lifetimes: bound_lifetimes,
+            bounded_ty: bounded_ty,
+            bounds: bounds,
+        })
+    };
+
+// TY //////////////////////////////////////////////////////////////////////////
+
+Ty =
+    {
+        TyVec
+    ,
+        TyFixedLengthVec
+    ,
+        TyPtr
+    ,
+        TyRptr
+    ,
+        TyBareFn
+    ,
+        TyNever
+    ,
+        TyTup
+    ,
+        TyPath
+    ,
+        TyQPath
+    ,
+        TyImplTrait
+    ,
+        TyParen
+    };
+
+TyVec: Ty =
+    "[" <Ty> "]"
+    => Ty::Vec(Box::new(<>));
+
+TyFixedLengthVec: Ty =
+    "[" <elem:Ty> ";" <len:Usize> "]"
+    => Ty::FixedLengthVec(Box::new(elem), len);
+
+TyPtr: Ty =
+    "*" <mutability:PtrMutability> <target:Ty>
+    => Ty::Ptr(Box::new(MutTy {
+        ty: target,
+        mutability: mutability,
+    }));
+
+TyRptr: Ty =
+    "&" <life:Lifetime?> <mutability:Mutability> <target:Ty>
+    => Ty::Rptr(life, Box::new(MutTy {
+        ty: target,
+        mutability: mutability,
+    }));
+
+TyBareFn: Ty =
+    "fn"
+    <lifetimes:("<" <Terminated0<",", LifetimeDef>> ">")?>
+    "("
+    <inputs:Terminated0<",", FnArg>>
+    ")"
+    <output:("->" <Ty>)?>
+    => Ty::BareFn(Box::new(BareFnTy {
+        lifetimes: lifetimes.unwrap_or_else(Vec::new),
+        decl: FnDecl {
+            inputs: inputs,
+            output: match output {
+                Some(ty) => FunctionRetTy::Ty(ty),
+                None => FunctionRetTy::Default,
+            },
+        },
+    }));
+
+TyNever: Ty =
+    "!"
+    => Ty::Never;
+
+TyTup: Ty =
+    {
+        "(" ")"
+        => Ty::Tup(Vec::new())
+    ,
+        "(" <first:Ty> "," <rest:Terminated0<",", Ty>> ")"
+        => Ty::Tup({
+            let mut all = rest;
+            all.insert(0, first);
+            all
+        })
+    };
+
+TyPath: Ty =
+    Path
+    => Ty::Path(None, <>);
+
+TyQPath: Ty =
+    "<"
+    <this:Ty>
+    <path:("as" <Path>)?>
+    ">"
+    "::"
+    <rest:Separated1<"::", PathSegment>>
+    => match path {
+        Some(mut path) => {
+            let pos = path.segments.len();
+            path.segments.extend(rest);
+            Ty::Path(Some(QSelf { ty: Box::new(this), position: pos }), path)
+        }
+        None => {
+            Ty::Path(Some(QSelf { ty: Box::new(this), position: 0 }), Path {
+                global: false,
+                segments: rest,
+            })
+        }
+    };
+
+TyImplTrait: Ty =
+    "impl"
+    <Separated1<"+", TyParamBound>>
+    => Ty::ImplTrait(<>);
+
+TyParen: Ty =
+    "("
+    <Ty>
+    ")"
+    => Ty::Paren(Box::new(<>));
+
+Mutability: Mutability =
+    "mut"?
+    => if <>.is_some() {
+        Mutability::Mutable
+    } else {
+        Mutability::Immutable
+    };
+
+PtrMutability: Mutability =
+    {
+        "mut"
+        => Mutability::Mutable
+    ,
+        "const"
+        => Mutability::Immutable
+    };
+
+Path: Path =
+    <global:"::"?>
+    <segments:Separated1<"::", PathSegment>>
+    => Path {
+        global: global.is_some(),
+        segments: segments,
+    };
+
+// TODO handle commas between lifetimes, types, bindings
+PathSegment: PathSegment =
+    {
+        <ident:Ident>
+        "<"
+        <lifetimes:Separated0<",", Lifetime>>
+        <types:Separated0<",", Ty>>
+        <bindings:Separated0<",", TypeBinding>>
+        ">"
+        => PathSegment {
+            ident: ident,
+            parameters: PathParameters::AngleBracketed(
+                AngleBracketedParameterData {
+                    lifetimes: lifetimes,
+                    types: types,
+                    bindings: bindings,
+                }
+            ),
+        }
+    ,
+        Ident
+        => PathSegment::ident(<>)
+    };
+
+TypeBinding: TypeBinding =
+    <ident:Ident>
+    "="
+    <ty:Ty>
+    => TypeBinding {
+        ident: ident,
+        ty: ty,
+    };
+
+PolyTraitRef: PolyTraitRef =
+    <bound_lifetimes:BoundLifetimes>
+    <trait_ref:Path>
+    => PolyTraitRef {
+        bound_lifetimes: bound_lifetimes,
+        trait_ref: trait_ref,
+    };
+
+FnArg: Arg =
+    <pat:(<Ident> ":")?>
+    <ty:Ty>
+    => Arg {
+        pat: pat,
+        ty: ty,
+    };
+
+// COMMON //////////////////////////////////////////////////////////////////////
+
+Ident: Ident =
+    r"[a-zA-Z_][a-zA-Z0-9_]*"
+    => From::from(<>);
+
+Usize: usize =
+    <r"[0-9]+">
+    => {
+        use std::str::FromStr;
+        use std::usize;
+        usize::from_str(<>).unwrap()
+    };
+
+Visibility: Visibility =
+    "pub"?
+    => if <>.is_some() {
+        Visibility::Public
+    } else {
+        Visibility::Inherited
+    };
+
+// HELPER //////////////////////////////////////////////////////////////////////
+
+#[inline]
+Separated0<S, T>: Vec<T> =
+    Separated1<S, T>?
+    => <>.unwrap_or_else(Vec::new);
+
+#[inline]
+Separated1<S, T>: Vec<T> =
+    <most:(<T> S)*> <last:T>
+    => {
+        let mut all = most;
+        all.push(last);
+        all
+    };
+
+Terminated0<S, T>: Vec<T> =
+    Terminated1<S, T>?
+    => <>.unwrap_or_else(Vec::new);
+
+Terminated1<S, T>: Vec<T> =
+    <most:(<T> S)*> <last:T> S?
+    => {
+        let mut all = most;
+        all.push(last);
+        all
+    };
+
+#[inline]
+Empty<T>: Vec<T> = () => Vec::new();

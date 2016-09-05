@@ -5,6 +5,9 @@ extern crate nom;
 #[cfg(feature = "printing")]
 extern crate quote;
 
+#[cfg(feature = "lalrpop")]
+pub mod grammar;
+
 #[macro_use]
 mod do_parse;
 
@@ -92,5 +95,13 @@ pub fn parse(input: &str) -> Item {
                 }
             }
         }
+    }
+}
+
+#[cfg(feature = "lalrpop")]
+pub fn parse(input: &str) -> Item {
+    match grammar::parse_Item(input) {
+        Ok(item) => item,
+        Err(err) => panic!("failed to parse item: {:?}", err),
     }
 }
