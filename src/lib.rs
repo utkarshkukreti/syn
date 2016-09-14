@@ -139,6 +139,9 @@ pub use ty::{
 #[cfg(feature = "aster")]
 pub mod aster;
 
+#[cfg(feature = "fold")]
+pub mod fold;
+
 #[cfg(feature = "visit")]
 pub mod visit;
 
