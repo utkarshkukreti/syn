@@ -1068,6 +1068,13 @@ pub mod parsing {
         }
     }
 
+    impl Expr {
+        #[cfg(feature = "full")]
+        pub fn parse_without_eager_brace(input: ParseStream) -> Result<Self> {
+            expr_no_struct(input)
+        }
+    }
+
     #[cfg(feature = "full")]
     fn expr_no_struct(input: ParseStream) -> Result<Expr> {
         ambiguous_expr(input, AllowStruct(false))
